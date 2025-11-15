@@ -503,20 +503,166 @@ async def handle_global_admin_action(query, action: str, user, context) -> None:
         )
     
     elif action == "manage":
-        # Manage groups
+        # Manage groups - Show list of groups to manage
+        groups = db.get_all_groups(limit=10)
+        
+        response = "🗑 <b>Manage Groups</b>\n\n"
+        
+        if not groups:
+            response += "No groups registered yet."
+            keyboard = [[InlineKeyboardButton("◀️ Back", callback_data="global_admin:back")]]
+        else:
+            response += "Select a group to manage:\n\n"
+            keyboard = []
+            
+            for group in groups:
+                title = group['title'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                button_text = f"📁 {title[:30]}"
+                keyboard.append([InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"global_admin:manage_group:{group['chat_id']}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton("◀️ Back", callback_data="global_admin:back")])
+        
         await query.edit_message_text(
-            "🗑 <b>Manage Groups</b>\n\n"
-            "This feature allows:\n"
-            "• Deleting groups from database\n"
-            "• Resetting group settings\n"
-            "• Viewing detailed group info\n\n"
-            "⚠️ <b>Coming Soon!</b>\n\n"
-            "Implementation planned for future version.",
+            response,
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("◀️ Back", callback_data="global_admin:back")
-            ]])
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+    
+    elif action == "manage_group":
+        # Show detailed info about specific group
+        if len(query.data.split(":")) < 3:
+            return
+        
+        chat_id = int(query.data.split(":")[2])
+        group = db.get_group(chat_id)
+        
+        if not group:
+            await query.edit_message_text(
+                "⚠️ Group not found.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Back", callback_data="global_admin:manage")
+                ]])
+            )
+            return
+        
+        title = group['title'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        settings = group.get('settings', {})
+        stats = group.get('stats', {})
+        
+        response = f"📊 <b>Group Details</b>\n\n"
+        response += f"<b>Name:</b> {title}\n"
+        response += f"<b>ID:</b> <code>{chat_id}</code>\n"
+        response += f"<b>Created:</b> {group.get('created_at', 'N/A').strftime('%Y-%m-%d %H:%M') if group.get('created_at') else 'N/A'}\n\n"
+        
+        response += f"<b>📈 Statistics:</b>\n"
+        response += f"• Files: {stats.get('total_files', 0)}\n"
+        response += f"• AI Requests: {stats.get('total_ai_requests', 0)}\n\n"
+        
+        response += f"<b>⚙️ Settings:</b>\n"
+        response += f"• AI Enabled: {'✅' if settings.get('ai_enabled') else '❌'}\n"
+        response += f"• Auto-tagging: {'✅' if settings.get('auto_tag_enabled') else '❌'}\n"
+        response += f"• Admin-only Upload: {'✅' if settings.get('admin_only_indexing') else '❌'}\n"
+        response += f"• Max Search Results: {settings.get('max_search_results', 10)}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Reset Settings", callback_data=f"global_admin:reset_settings:{chat_id}")],
+            [InlineKeyboardButton("🗑 Delete Group", callback_data=f"global_admin:confirm_delete:{chat_id}")],
+            [InlineKeyboardButton("◀️ Back", callback_data="global_admin:manage")]
+        ]
+        
+        await query.edit_message_text(
+            response,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif action == "reset_settings":
+        # Reset group settings to default
+        if len(query.data.split(":")) < 3:
+            return
+        
+        chat_id = int(query.data.split(":")[2])
+        group = db.get_group(chat_id)
+        
+        if not group:
+            await query.answer("⚠️ Group not found!", show_alert=True)
+            return
+        
+        # Reset to default settings
+        success = db.update_group_settings(chat_id, config.DEFAULT_GROUP_SETTINGS.copy())
+        
+        if success:
+            await query.answer("✅ Settings reset successfully!", show_alert=True)
+            # Show updated group details
+            # We need to reconstruct the action string manually
+            query.data = f"global_admin:manage_group:{chat_id}"
+            await handle_global_admin_action(query, "manage_group", user, context)
+        else:
+            await query.answer("❌ Failed to reset settings!", show_alert=True)
+    
+    elif action == "confirm_delete":
+        # Confirm deletion
+        if len(query.data.split(":")) < 3:
+            return
+        
+        chat_id = int(query.data.split(":")[2])
+        group = db.get_group(chat_id)
+        
+        if not group:
+            await query.answer("⚠️ Group not found!", show_alert=True)
+            return
+        
+        title = group['title'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        stats = group.get('stats', {})
+        
+        response = f"⚠️ <b>Confirm Deletion</b>\n\n"
+        response += f"Are you sure you want to delete this group?\n\n"
+        response += f"<b>Group:</b> {title}\n"
+        response += f"<b>ID:</b> <code>{chat_id}</code>\n\n"
+        response += f"<b>This will permanently delete:</b>\n"
+        response += f"• {stats.get('total_files', 0)} files\n"
+        response += f"• All group settings\n"
+        response += f"• All search sessions\n"
+        response += f"• All AI logs\n\n"
+        response += f"⚠️ <b>This action cannot be undone!</b>"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"global_admin:delete_confirmed:{chat_id}")],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"global_admin:manage_group:{chat_id}")]
+        ]
+        
+        await query.edit_message_text(
+            response,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif action == "delete_confirmed":
+        # Execute deletion
+        if len(query.data.split(":")) < 3:
+            return
+        
+        chat_id = int(query.data.split(":")[2])
+        group = db.get_group(chat_id)
+        
+        if not group:
+            await query.answer("⚠️ Group not found!", show_alert=True)
+            return
+        
+        title = group['title']
+        success = db.delete_group(chat_id)
+        
+        if success:
+            await query.answer(f"✅ Group '{title}' deleted successfully!", show_alert=True)
+            logger.info(f"Group {chat_id} deleted by global admin {user.id}")
+            
+            # Return to manage groups list
+            await handle_global_admin_action(query, "manage", user, context)
+        else:
+            await query.answer("❌ Failed to delete group!", show_alert=True)
     
     elif action == "back":
         # Return to main global admin panel
