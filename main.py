@@ -52,6 +52,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cleanup_expired_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
+            logger.error(f"Failed to send error message to user: {e}")
+
+
+async def cleanup_expired_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Background job to clean up expired search sessions.
     Runs periodically to maintain database hygiene.
@@ -79,8 +83,27 @@ def main() -> None:
         db = Database()
         logger.info("Database connection established")
         
-        # Create application
-        application = Application.builder().token(config.BOT_TOKEN).build()
+        async def notify_admin(app):
+            """
+            Notify global admins that the bot is online.
+            """
+            for admin_id in config.GLOBAL_ADMIN_IDS:
+                try:
+                    await app.bot.send_message(
+                        chat_id=admin_id,
+                        text="🤖 CollaLearn Bot is now online!"
+                    )
+                    logger.info(f"Notified admin {admin_id} that bot is online")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+        
+        # Build the application
+        application = (
+            Application.builder()
+            .token(config.BOT_TOKEN)
+            .post_init(notify_admin)
+            .build()
+        )
         
         # Register base handlers
         application.add_handler(CommandHandler("start", base_handlers.start_command))
@@ -121,6 +144,12 @@ def main() -> None:
         application.add_handler(MessageHandler(
             filters.REPLY & filters.TEXT,
             file_handlers.handle_tag_reply
+        ))
+        
+        # Register broadcast message handler
+        application.add_handler(MessageHandler(
+            filters.TEXT & filters.ChatType.PRIVATE,
+            admin_handlers.handle_broadcast_reply
         ))
         
         # Register error handler

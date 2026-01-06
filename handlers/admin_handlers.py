@@ -124,7 +124,7 @@ async def global_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🌍 View All Groups", callback_data="global_admin:groups")],
             [InlineKeyboardButton("📊 Global Statistics", callback_data="global_admin:stats")],
             [InlineKeyboardButton("🤖 Global AI Settings", callback_data="global_admin:ai")],
-            [InlineKeyboardButton("📤 Broadcast Message", callback_data="global_admin:broadcast")],
+            [InlineKeyboardButton("📤 Broadcast", callback_data="global_admin:broadcast_menu")],
             [InlineKeyboardButton("🗑 Manage Groups", callback_data="global_admin:manage")],
             [InlineKeyboardButton("❌ Close", callback_data="global_admin:close")]
         ]
@@ -189,6 +189,134 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("⚠️ An error occurred.", reply_markup=None)
         except:
             pass
+
+
+async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle replies for broadcast message input.
+    
+    Args:
+        update: Telegram update object
+        context: Callback context
+    """
+    try:
+        message = update.message
+        user = update.effective_user
+        
+        # Check if user is in broadcast mode
+        broadcast_mode = context.user_data.get("broadcast_mode")
+        if not broadcast_mode:
+            return
+        
+        # Check if global admin
+        if not is_global_admin(user.id):
+            return
+        
+        broadcast_text = message.text
+        if not broadcast_text:
+            await message.reply_text("❌ Please provide a message to broadcast.")
+            return
+        
+        # Clear broadcast mode
+        context.user_data["broadcast_mode"] = False
+        
+        db = Database()
+        success_count = 0
+        fail_count = 0
+        
+        # Handle different broadcast modes
+        if broadcast_mode in [True, "groups"]:
+            # Broadcast to groups (legacy mode or groups only)
+            groups = db.get_all_groups()
+            
+            if not groups:
+                await message.reply_text("⚠️ No groups found to broadcast to.")
+                return
+            
+            for group in groups:
+                try:
+                    await context.bot.send_message(
+                        chat_id=group["chat_id"],
+                        text=f"📢 <b>Announcement from Bot Admin</b>\n\n{broadcast_text}",
+                        parse_mode=ParseMode.HTML
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to broadcast to group {group['chat_id']}: {e}")
+                    fail_count += 1
+            
+            target_type = "groups"
+            
+        elif broadcast_mode == "users":
+            # Broadcast to users via PM
+            users_collection = db._db[config.USERS_COLLECTION]
+            users = list(users_collection.find({}, {"user_id": 1}))
+            
+            if not users:
+                await message.reply_text("⚠️ No users found to broadcast to.")
+                return
+            
+            for user_doc in users:
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_doc["user_id"],
+                        text=f"📢 <b>Announcement from Bot Admin</b>\n\n{broadcast_text}",
+                        parse_mode=ParseMode.HTML
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to broadcast to user {user_doc['user_id']}: {e}")
+                    fail_count += 1
+            
+            target_type = "users"
+            
+        elif broadcast_mode == "both":
+            # Broadcast to both groups and users
+            # First, broadcast to groups
+            groups = db.get_all_groups()
+            for group in groups:
+                try:
+                    await context.bot.send_message(
+                        chat_id=group["chat_id"],
+                        text=f"📢 <b>Announcement from Bot Admin</b>\n\n{broadcast_text}",
+                        parse_mode=ParseMode.HTML
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to broadcast to group {group['chat_id']}: {e}")
+                    fail_count += 1
+            
+            # Then, broadcast to users
+            users_collection = db._db[config.USERS_COLLECTION]
+            users = list(users_collection.find({}, {"user_id": 1}))
+            for user_doc in users:
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_doc["user_id"],
+                        text=f"📢 <b>Announcement from Bot Admin</b>\n\n{broadcast_text}",
+                        parse_mode=ParseMode.HTML
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to broadcast to user {user_doc['user_id']}: {e}")
+                    fail_count += 1
+            
+            target_type = "groups and users"
+        
+        # Report results
+        response = (
+            f"📤 <b>Broadcast Complete</b>\n\n"
+            f"✅ Sent to: <b>{success_count}</b> {target_type}\n"
+            f"❌ Failed: <b>{fail_count}</b> {target_type}\n\n"
+            f"Message: {broadcast_text[:100]}{'...' if len(broadcast_text) > 100 else ''}"
+        )
+        
+        await message.reply_text(response, parse_mode=ParseMode.HTML)
+        logger.info(f"Broadcast completed by {user.id}: {success_count} success, {fail_count} failed to {target_type}")
+        
+    except Exception as e:
+        logger.error(f"Error in handle_broadcast_reply: {e}", exc_info=True)
+        await message.reply_text("⚠️ An error occurred while broadcasting.")
 
 
 async def handle_group_admin_action(query, action: str, chat, user, context) -> None:
@@ -489,17 +617,64 @@ async def handle_global_admin_action(query, action: str, user, context) -> None:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
+    elif action == "broadcast_menu":
+        # Show broadcast options
+        keyboard = [
+            [InlineKeyboardButton("👥 Broadcast to Groups", callback_data="global_admin:broadcast_groups")],
+            [InlineKeyboardButton("👤 Broadcast to Users (PM)", callback_data="global_admin:broadcast_users")],
+            [InlineKeyboardButton("🌍 Broadcast to Both", callback_data="global_admin:broadcast_both")],
+            [InlineKeyboardButton("◀️ Back", callback_data="global_admin:back")]
+        ]
+        
+        await query.edit_message_text(
+            "📤 <b>Broadcast Options</b>\n\n"
+            "Choose who to send the announcement to:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif action == "broadcast_groups":
+        # Broadcast to groups
+        context.user_data["broadcast_mode"] = "groups"
+        await query.edit_message_text(
+            "📤 <b>Broadcast to Groups</b>\n\n"
+            "Send the message you want to broadcast to all study groups.\n\n"
+            "Type your message below:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None
+        )
+    
+    elif action == "broadcast_users":
+        # Broadcast to users (PM)
+        context.user_data["broadcast_mode"] = "users"
+        await query.edit_message_text(
+            "📤 <b>Broadcast to Users</b>\n\n"
+            "Send the message you want to broadcast to all users via private message.\n\n"
+            "Type your message below:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None
+        )
+    
+    elif action == "broadcast_both":
+        # Broadcast to both groups and users
+        context.user_data["broadcast_mode"] = "both"
+        await query.edit_message_text(
+            "📤 <b>Broadcast to Groups & Users</b>\n\n"
+            "Send the message you want to broadcast to all groups and all users.\n\n"
+            "Type your message below:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=None
+        )
+    
     elif action == "broadcast":
-        # Broadcast message
+        # Legacy broadcast (to groups)
+        context.user_data["broadcast_mode"] = True
         await query.edit_message_text(
             "📤 <b>Broadcast Message</b>\n\n"
-            "This feature allows sending announcements to all groups.\n\n"
-            "⚠️ <b>Coming Soon!</b>\n\n"
-            "Implementation planned for future version.",
+            "Send the message you want to broadcast to all groups.\n\n"
+            "Type your message below:",
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("◀️ Back", callback_data="global_admin:back")
-            ]])
+            reply_markup=None
         )
     
     elif action == "manage":
